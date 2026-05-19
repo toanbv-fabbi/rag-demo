@@ -1,9 +1,13 @@
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
-from transformers import pipeline as hf_pipeline
+from groq import Groq
 import gradio as gr
 
-# ── Setup ────────────────────────────────────
+# ── Setup Groq ───────────────────────────────
+client = Groq(api_key="")  # thay bằng key của bạn
+print("Groq ready!")
+
+# ── Setup Vector DB ──────────────────────────
 print("Loading vector DB...")
 embeddings = HuggingFaceEmbeddings(
     model_name = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
@@ -14,24 +18,15 @@ vectordb = Chroma(
 )
 print(f"Vector DB: {vectordb._collection.count()} vectors")
 
-print("Loading LLM...")
-llm = hf_pipeline(
-    "text2text-generation",
-    model      = "google/flan-t5-base",
-    max_length = 200,
-    device     = -1
-)
-print("Ready!")
-
-# ── RAG với memory ───────────────────────────
+# ── RAG với Groq ─────────────────────────────
 def answer(question, history):
     if not question.strip():
         return "", history
 
-    # Tạo context từ lịch sử chat
+    # Lịch sử chat
     history_text = ""
     if history:
-        for human, bot in history[-3:]:  # chỉ nhớ 3 lượt gần nhất
+        for human, bot in history[-3:]:
             history_text += f"Human: {human}\nAssistant: {bot}\n"
 
     # Tìm chunks liên quan
@@ -43,26 +38,32 @@ def answer(question, history):
             unique.append(r)
     context = "\n".join([r.page_content for r in unique])
 
-    # Prompt có lịch sử
-    prompt = f"""Based on the document and conversation history, answer briefly.
-
-Document:
+    # Gọi Groq API
+    response = client.chat.completions.create(
+       model = "llama-3.1-8b-instant",
+        messages = [
+            {
+                "role": "system",
+                "content": """Bạn là chatbot hỗ trợ nhân viên công ty ABC.
+Chỉ trả lời dựa trên tài liệu được cung cấp, ngắn gọn bằng tiếng Việt."""
+            },
+            {
+                "role": "user",
+                "content": f"""Tài liệu:
 {context}
 
-Conversation history:
+Lịch sử hội thoại:
 {history_text}
 
-Question: {question}
-
-Answer:"""
-
-    result = llm(prompt)[0]['generated_text']
-
-    # Cập nhật history
+Câu hỏi: {question}"""
+            }
+        ]
+    )
+    result = response.choices[0].message.content
     history.append((question, result))
     return "", history
 
-# ── Gradio UI với ChatInterface ───────────────
+# ── Gradio UI ────────────────────────────────
 with gr.Blocks(title="RAG Chatbot") as demo:
     gr.Markdown("# Chatbot Nội Quy Công Ty ABC")
     gr.Markdown("Hỏi bất kỳ câu hỏi nào về chính sách công ty")
