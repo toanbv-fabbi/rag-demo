@@ -1,5 +1,3 @@
-from langchain_community.document_loaders import TextLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
 from transformers import pipeline as hf_pipeline
@@ -25,11 +23,18 @@ llm = hf_pipeline(
 )
 print("Ready!")
 
-# ── RAG function ─────────────────────────────
-def answer(question):
+# ── RAG với memory ───────────────────────────
+def answer(question, history):
     if not question.strip():
-        return "Vui lòng nhập câu hỏi.", ""
+        return "", history
 
+    # Tạo context từ lịch sử chat
+    history_text = ""
+    if history:
+        for human, bot in history[-3:]:  # chỉ nhớ 3 lượt gần nhất
+            history_text += f"Human: {human}\nAssistant: {bot}\n"
+
+    # Tìm chunks liên quan
     results      = vectordb.similarity_search(question, k=2)
     seen, unique = set(), []
     for r in results:
@@ -38,46 +43,53 @@ def answer(question):
             unique.append(r)
     context = "\n".join([r.page_content for r in unique])
 
-    prompt = f"""Based on the following document, answer the question briefly.
+    # Prompt có lịch sử
+    prompt = f"""Based on the document and conversation history, answer briefly.
 
 Document:
 {context}
+
+Conversation history:
+{history_text}
 
 Question: {question}
 
 Answer:"""
 
     result = llm(prompt)[0]['generated_text']
-    return result, context
 
-# ── Gradio UI ────────────────────────────────
+    # Cập nhật history
+    history.append((question, result))
+    return "", history
+
+# ── Gradio UI với ChatInterface ───────────────
 with gr.Blocks(title="RAG Chatbot") as demo:
-    gr.Markdown("# Chatbot Nội Quy Công Ty")
-    gr.Markdown("Hỏi bất kỳ câu hỏi nào về chính sách công ty ABC")
+    gr.Markdown("# Chatbot Nội Quy Công Ty ABC")
+    gr.Markdown("Hỏi bất kỳ câu hỏi nào về chính sách công ty")
 
-    with gr.Row():
-        with gr.Column():
-            question = gr.Textbox(
-                label       = "Câu hỏi",
-                placeholder = "Ví dụ: Nhân viên được nghỉ bao nhiêu ngày phép?",
-                lines       = 2
-            )
-            btn = gr.Button("Hỏi", variant="primary")
-
-        with gr.Column():
-            answer_box  = gr.Textbox(label="Trả lời")
-            context_box = gr.Textbox(label="Tài liệu tham khảo", lines=5)
+    chatbot  = gr.Chatbot(height=400)
+    question = gr.Textbox(
+        placeholder = "Nhập câu hỏi...",
+        label       = "Câu hỏi"
+    )
+    btn   = gr.Button("Gửi", variant="primary")
+    clear = gr.Button("Xóa lịch sử")
 
     gr.Examples(
         examples = [
-            ["Nhân viên được nghỉ bao nhiêu ngày phép mỗi năm?"],
+            ["Nhân viên được nghỉ bao nhiêu ngày phép?"],
             ["Lương được trả vào ngày mấy?"],
-            ["Budget đào tạo mỗi năm là bao nhiêu?"],
             ["Chính sách làm việc từ xa thế nào?"],
+            ["Budget đào tạo mỗi năm là bao nhiêu?"],
         ],
         inputs = question
     )
 
-    btn.click(fn=answer, inputs=question, outputs=[answer_box, context_box])
+    btn.click(
+        fn      = answer,
+        inputs  = [question, chatbot],
+        outputs = [question, chatbot]
+    )
+    clear.click(lambda: ([], ""), outputs=[chatbot, question])
 
 demo.launch()
